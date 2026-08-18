@@ -1,938 +1,1054 @@
-const METAFIELD_NAMESPACE = "reviews_app";
-const METAFIELD_KEY = "reviews_data";
-const ADMIN_API_VERSION = "2026-07";
+document.addEventListener("DOMContentLoaded", function () {
+  const root = document.getElementById("reviews-app");
+
+  if (!root) return;
+
+  const productId = root.dataset.productId;
+  const apiUrl = root.dataset.apiUrl;
+
+  const summaryStarsEl =
+    document.getElementById("reviews-summary-stars");
+
+  const breakdownEl =
+    document.getElementById("reviews-breakdown");
+
+  const listEl =
+    document.getElementById("reviews-list");
+
+  const formWrap =
+    document.getElementById("review-form-wrap");
+
+  const openBtn =
+    document.getElementById("open-review-form");
+
+  const cancelBtn =
+    document.getElementById("cancel-review");
+
+  const form =
+    document.getElementById("review-form");
+
+  const msgEl =
+    document.getElementById("review-msg");
+
+  const starInput =
+    document.getElementById("star-input");
+
+  const ratingValue =
+    document.getElementById("rating-value");
 
 
-/* =========================================================
-   SHOPIFY CREDENTIALS
-   ========================================================= */
+  /* =========================================================
+     HELPERS
+     ========================================================= */
 
-const SHOPIFY_STORE_DOMAIN =
-  process.env.SHOPIFY_STORE_DOMAIN;
-
-const SHOPIFY_CLIENT_ID =
-  process.env.SHOPIFY_CLIENT_ID;
-
-const SHOPIFY_CLIENT_SECRET =
-  process.env.SHOPIFY_CLIENT_SECRET;
-
-
-/* =========================================================
-   TOKEN CACHE
-   ========================================================= */
-
-let cachedToken = null;
-let tokenExpiresAt = 0;
-
-
-/* =========================================================
-   CORS
-   ========================================================= */
-
-function setCors(res) {
-
-  res.setHeader(
-    "Access-Control-Allow-Origin",
-    "*"
-  );
-
-  res.setHeader(
-    "Access-Control-Allow-Methods",
-    "GET, POST, OPTIONS"
-  );
-
-  res.setHeader(
-    "Access-Control-Allow-Headers",
-    "Content-Type"
-  );
-
-}
-
-
-/* =========================================================
-   SHOPIFY ACCESS TOKEN
-   ========================================================= */
-
-async function getShopifyAccessToken() {
-
-  if (!SHOPIFY_STORE_DOMAIN) {
-    throw new Error(
-      "SHOPIFY_STORE_DOMAIN missing"
+  function starString(rating) {
+    const full = Math.max(
+      0,
+      Math.min(5, Math.round(Number(rating) || 0))
     );
-  }
 
-  if (!SHOPIFY_CLIENT_ID) {
-    throw new Error(
-      "SHOPIFY_CLIENT_ID missing"
-    );
-  }
-
-  if (!SHOPIFY_CLIENT_SECRET) {
-    throw new Error(
-      "SHOPIFY_CLIENT_SECRET missing"
+    return (
+      "★".repeat(full) +
+      "☆".repeat(5 - full)
     );
   }
 
 
-  /* Reuse existing token */
+  function renderStarInput(selected) {
+    starInput
+      .querySelectorAll("span")
+      .forEach((star) => {
 
-  if (
-    cachedToken &&
-    Date.now() <
-      tokenExpiresAt - 60000
-  ) {
+        star.textContent =
+          Number(star.dataset.star) <= selected
+            ? "★"
+            : "☆";
 
-    return cachedToken;
-
+      });
   }
 
 
-  const tokenUrl =
-    `https://${SHOPIFY_STORE_DOMAIN}/admin/oauth/access_token`;
+  function escapeHtml(value) {
+    const div = document.createElement("div");
+
+    div.textContent = value == null ? "" : String(value);
+
+    return div.innerHTML;
+  }
 
 
-  const response =
-    await fetch(tokenUrl, {
+  function formatDate(date) {
+    const d = new Date(date);
 
-      method: "POST",
+    if (isNaN(d.getTime())) {
+      return "";
+    }
 
-      headers: {
-        "Content-Type":
-          "application/x-www-form-urlencoded",
+    return d.toLocaleDateString("en-US", {
+      month: "long",
+      day: "numeric",
+      year: "numeric",
+    });
+  }
 
-        Accept:
-          "application/json",
-      },
 
-      body: new URLSearchParams({
+  function getLikeStorageKey(reviewId) {
+    return `shopify-review-liked-${productId}-${reviewId}`;
+  }
 
-        grant_type:
-          "client_credentials",
 
-        client_id:
-          SHOPIFY_CLIENT_ID,
+  /* =========================================================
+     STAR INPUT
+     ========================================================= */
 
-        client_secret:
-          SHOPIFY_CLIENT_SECRET,
+  starInput.addEventListener("click", function (e) {
 
-      }),
+    const star = e.target.dataset.star;
 
+    if (!star) return;
+
+    ratingValue.value = star;
+
+    renderStarInput(Number(star));
+
+  });
+
+
+  /* =========================================================
+     OPEN REVIEW FORM
+     ========================================================= */
+
+  openBtn.addEventListener("click", function () {
+
+    formWrap.hidden = false;
+
+    formWrap.scrollIntoView({
+      behavior: "smooth",
+      block: "center",
     });
 
+  });
 
-  const data =
-    await response.json();
 
+  /* =========================================================
+     CANCEL REVIEW
+     ========================================================= */
 
-  if (
-    !response.ok ||
-    !data.access_token
-  ) {
+  cancelBtn.addEventListener("click", function () {
 
-    throw new Error(
-      `Shopify token error: ${JSON.stringify(
-        data
-      )}`
-    );
+    formWrap.hidden = true;
 
-  }
+    form.reset();
 
+    ratingValue.value = "";
 
-  cachedToken =
-    data.access_token;
+    renderStarInput(0);
 
+    msgEl.textContent = "";
 
-  tokenExpiresAt =
-    Date.now() +
-    Number(
-      data.expires_in || 86399
-    ) *
-      1000;
+  });
 
 
-  return cachedToken;
+  /* =========================================================
+     LOAD REVIEWS
+     ========================================================= */
 
-}
+  async function loadReviews() {
 
+    try {
 
-/* =========================================================
-   SHOPIFY GRAPHQL
-   ========================================================= */
+      const res = await fetch(
+        `${apiUrl}?productId=${encodeURIComponent(productId)}`
+      );
 
-async function shopifyGraphQL(
-  query,
-  variables
-) {
+      const data = await res.json();
 
-  const token =
-    await getShopifyAccessToken();
-
-
-  const response =
-    await fetch(
-      `https://${SHOPIFY_STORE_DOMAIN}/admin/api/${ADMIN_API_VERSION}/graphql.json`,
-      {
-
-        method: "POST",
-
-        headers: {
-
-          "Content-Type":
-            "application/json",
-
-          Accept:
-            "application/json",
-
-          "X-Shopify-Access-Token":
-            token,
-
-        },
-
-        body: JSON.stringify({
-          query,
-          variables,
-        }),
-
-      }
-    );
-
-
-  const json =
-    await response.json();
-
-
-  if (!response.ok) {
-
-    throw new Error(
-      `Shopify API HTTP ${
-        response.status
-      }: ${JSON.stringify(json)}`
-    );
-
-  }
-
-
-  if (json.errors) {
-
-    throw new Error(
-      `Shopify GraphQL errors: ${JSON.stringify(
-        json.errors
-      )}`
-    );
-
-  }
-
-
-  return json.data;
-
-}
-
-
-/* =========================================================
-   PRODUCT GID
-   ========================================================= */
-
-function toGid(id) {
-
-  return String(id)
-    .startsWith("gid://")
-    ? id
-    : `gid://shopify/Product/${id}`;
-
-}
-
-
-/* =========================================================
-   GET REVIEWS
-   ========================================================= */
-
-async function getReviews(gid) {
-
-  const data =
-    await shopifyGraphQL(
-
-      `query($id: ID!) {
-
-        product(id: $id) {
-
-          metafield(
-            namespace: "${METAFIELD_NAMESPACE}"
-            key: "${METAFIELD_KEY}"
-          ) {
-
-            value
-
-          }
-
-        }
-
-      }`,
-
-      {
-        id: gid,
-      }
-
-    );
-
-
-  const raw =
-    data?.product?.metafield?.value;
-
-
-  if (!raw) {
-    return [];
-  }
-
-
-  try {
-
-    const parsed =
-      JSON.parse(raw);
-
-
-    return Array.isArray(parsed)
-      ? parsed
-      : [];
-
-  } catch (error) {
-
-    console.error(
-      "Invalid reviews JSON:",
-      error
-    );
-
-    return [];
-
-  }
-
-}
-
-
-/* =========================================================
-   SAVE REVIEWS
-   ========================================================= */
-
-async function saveReviews(
-  gid,
-  reviews
-) {
-
-  const data =
-    await shopifyGraphQL(
-
-      `mutation(
-        $metafields: [MetafieldsSetInput!]!
-      ) {
-
-        metafieldsSet(
-          metafields: $metafields
-        ) {
-
-          userErrors {
-            field
-            message
-          }
-
-        }
-
-      }`,
-
-      {
-
-        metafields: [
-
-          {
-
-            ownerId: gid,
-
-            namespace:
-              METAFIELD_NAMESPACE,
-
-            key:
-              METAFIELD_KEY,
-
-            type:
-              "json",
-
-            value:
-              JSON.stringify(reviews),
-
-          },
-
-        ],
-
-      }
-
-    );
-
-
-  const errors =
-    data?.metafieldsSet?.userErrors;
-
-
-  if (
-    errors &&
-    errors.length
-  ) {
-
-    throw new Error(
-      JSON.stringify(errors)
-    );
-
-  }
-
-}
-
-
-/* =========================================================
-   FIND REVIEW
-   ========================================================= */
-
-function findReview(
-  reviews,
-  reviewId
-) {
-
-  return reviews.find(
-    (review) =>
-      String(review.id) ===
-      String(reviewId)
-  );
-
-}
-
-
-/* =========================================================
-   MAIN HANDLER
-   ========================================================= */
-
-export default async function handler(
-  req,
-  res
-) {
-
-  setCors(res);
-
-
-  /* OPTIONS */
-
-  if (
-    req.method === "OPTIONS"
-  ) {
-
-    return res
-      .status(200)
-      .end();
-
-  }
-
-
-  /* PRODUCT ID */
-
-  const productId =
-    req.query?.productId ||
-    req.body?.productId;
-
-
-  if (!productId) {
-
-    return res
-      .status(400)
-      .json({
-        error:
-          "productId missing",
-      });
-
-  }
-
-
-  const gid =
-    toGid(productId);
-
-
-  try {
-
-
-    /* =====================================================
-       GET
-       ===================================================== */
-
-    if (
-      req.method === "GET"
-    ) {
-
-      const reviews =
-        (
-          await getReviews(gid)
-        ).filter(
-          (review) =>
-            review.approved !== false
+      if (!res.ok) {
+        throw new Error(
+          data.error || "Reviews load failed"
         );
+      }
 
 
-      const total =
-        reviews.length;
+      /* SUMMARY */
+
+      summaryStarsEl.textContent =
+        `${starString(data.average)} ${data.average || 0} / 5 (${data.total || 0} reviews)`;
 
 
-      const average =
-        total
-          ? Number(
-              (
-                reviews.reduce(
-                  (
-                    sum,
-                    review
-                  ) =>
-                    sum +
-                    Number(
-                      review.rating || 0
-                    ),
-                  0
-                ) / total
-              ).toFixed(1)
-            )
-          : 0;
-
+      /* BREAKDOWN */
 
       const breakdown =
-        [5, 4, 3, 2, 1].map(
-          (star) => ({
+        Array.isArray(data.breakdown)
+          ? data.breakdown
+          : [];
 
-            star,
+      breakdownEl.innerHTML =
+        breakdown
+          .map((row) => {
 
-            count:
-              reviews.filter(
-                (review) =>
-                  Number(
-                    review.rating
-                  ) === star
-              ).length,
+            const pct =
+              data.total
+                ? Math.round(
+                    (Number(row.count) /
+                      Number(data.total)) *
+                      100
+                  )
+                : 0;
+
+            return `
+              <div class="reviews-app__breakdown-row">
+
+                <span>
+                  ${Number(row.star)}★
+                </span>
+
+                <div class="bar-track">
+                  <div
+                    class="bar-fill"
+                    style="width:${pct}%"
+                  ></div>
+                </div>
+
+                <span>
+                  ${Number(row.count)}
+                </span>
+
+              </div>
+            `;
 
           })
-        );
+          .join("");
 
 
-      return res
-        .status(200)
-        .json({
+      /* NO REVIEWS */
 
-          average,
+      if (
+        !Array.isArray(data.reviews) ||
+        !data.reviews.length
+      ) {
 
-          total,
+        listEl.innerHTML = `
+          <p class="reviews-app__empty">
+            Abhi tak koi review nahi.
+            Sabse pehle review likhein!
+          </p>
+        `;
 
-          breakdown,
+        return;
+      }
 
-          reviews,
 
-        });
+      /* REVIEWS */
+
+      listEl.innerHTML =
+        data.reviews
+          .map((review) => {
+
+            const reviewId =
+              escapeHtml(review.id);
+
+            const name =
+              escapeHtml(review.name);
+
+            const body =
+              escapeHtml(review.body);
+
+            const title =
+              escapeHtml(review.title || "");
+
+            const avatar =
+              review.avatar
+                ? `
+                  <img
+                    src="${escapeHtml(review.avatar)}"
+                    alt="${name}"
+                  >
+                `
+                : escapeHtml(
+                    String(review.name || "?")
+                      .charAt(0)
+                      .toUpperCase()
+                  );
+
+
+            const likes =
+              Number(review.likes || 0);
+
+            const comments =
+              Array.isArray(review.comments)
+                ? review.comments
+                : [];
+
+
+            const liked =
+              localStorage.getItem(
+                getLikeStorageKey(review.id)
+              ) === "true";
+
+
+            const commentsHtml =
+              comments
+                .map((comment) => {
+
+                  return `
+                    <div class="review-comment">
+
+                      <div class="review-comment-name">
+                        ${escapeHtml(comment.name)}
+                      </div>
+
+                      <div class="review-comment-body">
+                        ${escapeHtml(comment.body)}
+                      </div>
+
+                      <div class="review-comment-date">
+                        ${formatDate(comment.date)}
+                      </div>
+
+                    </div>
+                  `;
+
+                })
+                .join("");
+
+
+            return `
+              <div
+                class="reviews-app__list-item"
+                data-review-id="${reviewId}"
+              >
+
+                <!-- LEFT USER -->
+
+                <div class="review-user">
+
+                  <div class="review-avatar">
+                    ${avatar}
+                  </div>
+
+                  <div class="review-name">
+                    ${name}
+                  </div>
+
+                  <div class="review-count">
+                    ${Number(review.reviewCount || 1)}
+                    ${Number(review.reviewCount || 1) === 1
+                      ? "review"
+                      : "reviews"}
+                  </div>
+
+                  <div class="review-count">
+                    ${Number(review.followers || 0)}
+                    followers
+                  </div>
+
+                  <button
+                    class="review-follow-btn"
+                    type="button"
+                  >
+                    Follow
+                  </button>
+
+                </div>
+
+
+                <!-- RIGHT REVIEW -->
+
+                <div class="review-content">
+
+                  <div class="review-top">
+
+                    <div class="review-stars">
+                      ${starString(review.rating)}
+                    </div>
+
+                    <div class="review-date">
+                      ${formatDate(review.date)}
+                    </div>
+
+                  </div>
+
+
+                  ${
+                    title
+                      ? `
+                        <div class="review-title">
+                          ${title}
+                        </div>
+                      `
+                      : ""
+                  }
+
+
+                  <div class="review-body">
+                    ${body}
+                  </div>
+
+
+                  <button
+                    class="review-show-more"
+                    type="button"
+                  >
+                    Show more
+                    <span>⌄</span>
+                  </button>
+
+
+                  <!-- ACTIONS -->
+
+                  <div class="review-actions">
+
+                    <!-- LIKE -->
+
+                    <button
+                      class="review-action like-btn ${
+                        liked ? "liked" : ""
+                      }"
+                      type="button"
+                    >
+
+                      <svg viewBox="0 0 24 24">
+                        <path
+                          d="M7 10v10H4V10h3z"
+                        ></path>
+
+                        <path
+                          d="M7 10l4-7c.5-.9 1.8-.6 1.8.4V7h4.7c1.4 0 2.4 1.3 2 2.6l-1.4 6.8c-.2.9-1 1.6-2 1.6H7"
+                        ></path>
+                      </svg>
+
+                      <span class="like-text">
+                        ${liked ? "Liked" : "Like"}
+                      </span>
+
+                      <span class="like-count">
+                        ${likes}
+                      </span>
+
+                    </button>
+
+
+                    <!-- COMMENT -->
+
+                    <button
+                      class="review-action comment-btn"
+                      type="button"
+                    >
+
+                      <svg viewBox="0 0 24 24">
+                        <path
+                          d="M21 11.5a8.4 8.4 0 0 1-9 8.5 9.4 9.4 0 0 1-4.1-.9L3 21l1.9-4.2A8.2 8.2 0 0 1 3 11.5C3 7 7 3 12 3s9 3 9 8.5z"
+                        ></path>
+                      </svg>
+
+                      <span>
+                        Comment
+                      </span>
+
+                      <span class="comment-count">
+                        ${comments.length}
+                      </span>
+
+                    </button>
+
+
+                    <!-- MORE -->
+
+                    <button
+                      class="review-action more-btn"
+                      type="button"
+                    >
+                      •••
+                    </button>
+
+                  </div>
+
+
+                  <!-- COMMENT FORM -->
+
+                  <div class="review-comment-box">
+
+                    <textarea
+                      class="comment-input"
+                      maxlength="1000"
+                      placeholder="Write a comment..."
+                    ></textarea>
+
+                    <button
+                      type="button"
+                      class="submit-comment"
+                    >
+                      Comment
+                    </button>
+
+                  </div>
+
+
+                  <!-- COMMENTS -->
+
+                  ${
+                    comments.length
+                      ? `
+                        <div class="review-comments">
+                          ${commentsHtml}
+                        </div>
+                      `
+                      : ""
+                  }
+
+                </div>
+
+              </div>
+            `;
+
+          })
+          .join("");
+
+
+    } catch (error) {
+
+      console.error(
+        "Reviews load error:",
+        error
+      );
+
+      listEl.innerHTML = `
+        <p class="reviews-app__empty">
+          Reviews load nahi ho sake.
+        </p>
+      `;
 
     }
 
-
-    /* =====================================================
-       POST
-       ===================================================== */
-
-    if (
-      req.method === "POST"
-    ) {
-
-      const body =
-        req.body || {};
+  }
 
 
-      const action =
-        body.action;
+  /* =========================================================
+     LIKE / COMMENT / FOLLOW / SHOW MORE
+     ========================================================= */
+
+  listEl.addEventListener("click", async function (e) {
+
+    const reviewItem =
+      e.target.closest(
+        ".reviews-app__list-item"
+      );
+
+    if (!reviewItem) return;
 
 
-      /* ===================================================
-         LIKE / UNLIKE
-         =================================================== */
+    const reviewId =
+      reviewItem.dataset.reviewId;
+
+
+    /* -------------------------------------------------------
+       FOLLOW
+       ------------------------------------------------------- */
+
+    const followBtn =
+      e.target.closest(
+        ".review-follow-btn"
+      );
+
+    if (followBtn) {
+
+      followBtn.classList.toggle(
+        "following"
+      );
 
       if (
-        action === "like"
+        followBtn.classList.contains(
+          "following"
+        )
+      ) {
+        followBtn.textContent =
+          "Following";
+      } else {
+        followBtn.textContent =
+          "Follow";
+      }
+
+      return;
+    }
+
+
+    /* -------------------------------------------------------
+       SHOW MORE
+       ------------------------------------------------------- */
+
+    const showMore =
+      e.target.closest(
+        ".review-show-more"
+      );
+
+    if (showMore) {
+
+      const body =
+        reviewItem.querySelector(
+          ".review-body"
+        );
+
+      body.classList.toggle(
+        "expanded"
+      );
+
+      if (
+        body.classList.contains(
+          "expanded"
+        )
       ) {
 
-        const reviewId =
-          body.reviewId;
+        showMore.innerHTML =
+          `Show less <span>⌃</span>`;
+
+      } else {
+
+        showMore.innerHTML =
+          `Show more <span>⌄</span>`;
+
+      }
+
+      return;
+    }
 
 
-        if (!reviewId) {
+    /* -------------------------------------------------------
+       COMMENT BUTTON
+       ------------------------------------------------------- */
 
-          return res
-            .status(400)
-            .json({
-              error:
-                "reviewId missing",
-            });
+    const commentBtn =
+      e.target.closest(
+        ".comment-btn"
+      );
+
+    if (commentBtn) {
+
+      const box =
+        reviewItem.querySelector(
+          ".review-comment-box"
+        );
+
+      box.classList.toggle(
+        "active"
+      );
+
+      if (
+        box.classList.contains(
+          "active"
+        )
+      ) {
+
+        const textarea =
+          box.querySelector(
+            ".comment-input"
+          );
+
+        textarea.focus();
+
+      }
+
+      return;
+    }
+
+
+    /* -------------------------------------------------------
+       LIKE
+       ------------------------------------------------------- */
+
+    const likeBtn =
+      e.target.closest(
+        ".like-btn"
+      );
+
+    if (likeBtn) {
+
+      if (
+        likeBtn.dataset.loading === "true"
+      ) {
+        return;
+      }
+
+      likeBtn.dataset.loading =
+        "true";
+
+
+      const alreadyLiked =
+        likeBtn.classList.contains(
+          "liked"
+        );
+
+
+      try {
+
+        const res =
+          await fetch(apiUrl, {
+
+            method: "POST",
+
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
+
+            body: JSON.stringify({
+              action: "like",
+              productId: productId,
+              reviewId: reviewId,
+              unlike: alreadyLiked,
+            }),
+
+          });
+
+
+        const data =
+          await res.json();
+
+
+        if (!res.ok) {
+
+          throw new Error(
+            data.error ||
+              "Like failed"
+          );
 
         }
 
 
-        const reviews =
-          await getReviews(gid);
+        const countEl =
+          likeBtn.querySelector(
+            ".like-count"
+          );
 
-
-        const review =
-          findReview(
-            reviews,
-            reviewId
+        const textEl =
+          likeBtn.querySelector(
+            ".like-text"
           );
 
 
-        if (!review) {
-
-          return res
-            .status(404)
-            .json({
-              error:
-                "Review not found",
-            });
-
-        }
+        countEl.textContent =
+          Number(data.likes || 0);
 
 
-        if (
-          typeof review.likes !==
-          "number"
-        ) {
+        if (alreadyLiked) {
 
-          review.likes = 0;
+          likeBtn.classList.remove(
+            "liked"
+          );
 
-        }
+          textEl.textContent =
+            "Like";
 
-
-        const unlike =
-          body.unlike === true;
-
-
-        if (unlike) {
-
-          review.likes =
-            Math.max(
-              0,
-              review.likes - 1
-            );
+          localStorage.removeItem(
+            getLikeStorageKey(
+              reviewId
+            )
+          );
 
         } else {
 
-          review.likes += 1;
-
-        }
-
-
-        await saveReviews(
-          gid,
-          reviews
-        );
-
-
-        return res
-          .status(200)
-          .json({
-
-            success: true,
-
-            likes:
-              review.likes,
-
-          });
-
-      }
-
-
-      /* ===================================================
-         COMMENT
-         =================================================== */
-
-      if (
-        action === "comment"
-      ) {
-
-        const reviewId =
-          body.reviewId;
-
-
-        const commentBody =
-          String(
-            body.body || ""
-          ).trim();
-
-
-        const commentName =
-          String(
-            body.name ||
-              "Guest"
-          ).trim();
-
-
-        if (!reviewId) {
-
-          return res
-            .status(400)
-            .json({
-              error:
-                "reviewId missing",
-            });
-
-        }
-
-
-        if (!commentBody) {
-
-          return res
-            .status(400)
-            .json({
-              error:
-                "Comment empty hai",
-            });
-
-        }
-
-
-        if (
-          commentBody.length >
-          1000
-        ) {
-
-          return res
-            .status(400)
-            .json({
-              error:
-                "Comment bohat lamba hai",
-            });
-
-        }
-
-
-        const reviews =
-          await getReviews(gid);
-
-
-        const review =
-          findReview(
-            reviews,
-            reviewId
+          likeBtn.classList.add(
+            "liked"
           );
 
+          textEl.textContent =
+            "Liked";
 
-        if (!review) {
-
-          return res
-            .status(404)
-            .json({
-              error:
-                "Review not found",
-            });
-
-        }
-
-
-        if (
-          !Array.isArray(
-            review.comments
-          )
-        ) {
-
-          review.comments = [];
+          localStorage.setItem(
+            getLikeStorageKey(
+              reviewId
+            ),
+            "true"
+          );
 
         }
 
 
-        const comment = {
+      } catch (error) {
 
-          id:
-            crypto.randomUUID(),
+        console.error(
+          "Like error:",
+          error
+        );
 
-          name:
-            commentName
-              .slice(0, 80),
+        alert(
+          "Like save nahi ho saka."
+        );
 
-          body:
-            commentBody
-              .slice(0, 1000),
+      } finally {
 
-          date:
-            new Date().toISOString(),
+        likeBtn.dataset.loading =
+          "false";
 
-        };
+      }
+
+      return;
+    }
 
 
-        review.comments.push(
-          comment
+    /* -------------------------------------------------------
+       SUBMIT COMMENT
+       ------------------------------------------------------- */
+
+    const commentSubmit =
+      e.target.closest(
+        ".submit-comment"
+      );
+
+    if (commentSubmit) {
+
+      if (
+        commentSubmit.dataset.loading ===
+        "true"
+      ) {
+        return;
+      }
+
+
+      const box =
+        commentSubmit.closest(
+          ".review-comment-box"
+        );
+
+      const textarea =
+        box.querySelector(
+          ".comment-input"
         );
 
 
-        await saveReviews(
-          gid,
-          reviews
+      const commentBody =
+        textarea.value.trim();
+
+
+      if (!commentBody) {
+
+        alert(
+          "Please comment likhein."
         );
 
-
-        return res
-          .status(200)
-          .json({
-
-            success: true,
-
-            comment,
-
-            comments:
-              review.comments,
-
-          });
-
+        return;
       }
 
 
-      /* ===================================================
-         NEW REVIEW
-         =================================================== */
+      commentSubmit.dataset.loading =
+        "true";
 
-      const {
-        name,
-        rating,
-        title,
-        body: reviewBody,
-      } = body;
+      commentSubmit.textContent =
+        "Posting...";
 
 
-      if (
-        !name ||
-        !rating ||
-        !reviewBody
-      ) {
+      try {
 
-        return res
-          .status(400)
-          .json({
+        const res =
+          await fetch(apiUrl, {
 
-            error:
-              "Naam, rating aur review likhna zaroori hai",
+            method: "POST",
 
-          });
+            headers: {
+              "Content-Type":
+                "application/json",
+            },
 
-      }
-
-
-      if (
-        Number(rating) < 1 ||
-        Number(rating) > 5
-      ) {
-
-        return res
-          .status(400)
-          .json({
-
-            error:
-              "Rating 1 se 5 ke beech honi chahiye",
+            body: JSON.stringify({
+              action: "comment",
+              productId: productId,
+              reviewId: reviewId,
+              name: "Guest",
+              body: commentBody,
+            }),
 
           });
 
+
+        const data =
+          await res.json();
+
+
+        if (!res.ok) {
+
+          throw new Error(
+            data.error ||
+              "Comment failed"
+          );
+
+        }
+
+
+        /* Reload reviews so the comment
+           is shown from Shopify metafield */
+
+        await loadReviews();
+
+
+      } catch (error) {
+
+        console.error(
+          "Comment error:",
+          error
+        );
+
+        alert(
+          error.message ||
+            "Comment save nahi ho saka."
+        );
+
+      } finally {
+
+        commentSubmit.dataset.loading =
+          "false";
+
+        commentSubmit.textContent =
+          "Comment";
+
+      }
+
+      return;
+    }
+
+  });
+
+
+  /* =========================================================
+     SUBMIT NEW REVIEW
+     ========================================================= */
+
+  form.addEventListener(
+    "submit",
+    async function (e) {
+
+      e.preventDefault();
+
+      msgEl.textContent = "";
+
+
+      if (!ratingValue.value) {
+
+        msgEl.textContent =
+          "Please select a star rating.";
+
+        return;
       }
 
 
-      const reviews =
-        await getReviews(gid);
-
-
-      const newReview = {
-
-        id:
-          crypto.randomUUID(),
+      const payload = {
 
         name:
-          String(name)
-            .slice(0, 80),
-
-        rating:
-          Number(rating),
+          document.getElementById(
+            "review-name"
+          ).value.trim(),
 
         title:
-          String(title || "")
-            .slice(0, 120),
+          document.getElementById(
+            "review-title"
+          ).value.trim(),
 
         body:
-          String(reviewBody)
-            .slice(0, 2000),
+          document.getElementById(
+            "review-body"
+          ).value.trim(),
 
-        date:
-          new Date().toISOString(),
-
-        approved:
-          true,
-
-        likes:
-          0,
-
-        comments:
-          [],
-
-        followers:
-          0,
-
-        reviewCount:
-          1,
+        rating:
+          Number(
+            ratingValue.value
+          ),
 
       };
 
 
-      reviews.unshift(
-        newReview
-      );
+      const submitBtn =
+        document.getElementById(
+          "submit-review"
+        );
 
 
-      await saveReviews(
-        gid,
-        reviews
-      );
+      submitBtn.disabled = true;
+
+      submitBtn.textContent =
+        "Submitting...";
 
 
-      return res
-        .status(200)
-        .json({
+      try {
 
-          success: true,
+        const res =
+          await fetch(
+            `${apiUrl}?productId=${encodeURIComponent(
+              productId
+            )}`,
+            {
 
-          review:
-            newReview,
+              method: "POST",
 
-        });
+              headers: {
+                "Content-Type":
+                  "application/json",
+              },
+
+              body: JSON.stringify(
+                payload
+              ),
+
+            }
+          );
+
+
+        const data =
+          await res.json();
+
+
+        if (!res.ok) {
+
+          throw new Error(
+            data.error ||
+              "Kuch galat ho gaya."
+          );
+
+        }
+
+
+        msgEl.textContent =
+          "Shukriya! Aapka review submit ho gaya.";
+
+
+        form.reset();
+
+        ratingValue.value = "";
+
+        renderStarInput(0);
+
+        formWrap.hidden = true;
+
+
+        await loadReviews();
+
+
+      } catch (error) {
+
+        console.error(
+          "Review submit error:",
+          error
+        );
+
+        msgEl.textContent =
+          error.message ||
+          "Network error, dobara try karein.";
+
+      } finally {
+
+        submitBtn.disabled = false;
+
+        submitBtn.textContent =
+          "Submit Review";
+
+      }
 
     }
+  );
 
 
-    /* =====================================================
-       METHOD NOT ALLOWED
-       ===================================================== */
+  /* =========================================================
+     INITIAL LOAD
+     ========================================================= */
 
-    return res
-      .status(405)
-      .json({
+  loadReviews();
 
-        error:
-          "Method not allowed",
-
-      });
-
-
-  } catch (error) {
-
-    console.error(
-      "REVIEWS API ERROR:",
-      error
-    );
-
-
-    return res
-      .status(500)
-      .json({
-
-        error:
-          "Server error, dobara try karein",
-
-      });
-
-  }
-
-}
+});
