@@ -2,7 +2,6 @@ const METAFIELD_NAMESPACE = "reviews_app";
 const METAFIELD_KEY = "reviews_data";
 const ADMIN_API_VERSION = "2026-07";
 
-// Shopify Dev Dashboard credentials
 const SHOPIFY_STORE_DOMAIN = process.env.SHOPIFY_STORE_DOMAIN;
 const SHOPIFY_CLIENT_ID = process.env.SHOPIFY_CLIENT_ID;
 const SHOPIFY_CLIENT_SECRET = process.env.SHOPIFY_CLIENT_SECRET;
@@ -29,26 +28,25 @@ async function getShopifyAccessToken() {
     throw new Error("SHOPIFY_CLIENT_SECRET missing");
   }
 
-  // Reuse token while it is still valid
   if (cachedToken && Date.now() < tokenExpiresAt - 60000) {
     return cachedToken;
   }
 
-  const tokenUrl =
-    `https://${SHOPIFY_STORE_DOMAIN}/admin/oauth/access_token`;
-
-  const response = await fetch(tokenUrl, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      Accept: "application/json",
-    },
-    body: new URLSearchParams({
-      grant_type: "client_credentials",
-      client_id: SHOPIFY_CLIENT_ID,
-      client_secret: SHOPIFY_CLIENT_SECRET,
-    }),
-  });
+  const response = await fetch(
+    `https://${SHOPIFY_STORE_DOMAIN}/admin/oauth/access_token`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+        Accept: "application/json",
+      },
+      body: new URLSearchParams({
+        grant_type: "client_credentials",
+        client_id: SHOPIFY_CLIENT_ID,
+        client_secret: SHOPIFY_CLIENT_SECRET,
+      }),
+    }
+  );
 
   const data = await response.json();
 
@@ -59,7 +57,8 @@ async function getShopifyAccessToken() {
   }
 
   cachedToken = data.access_token;
-  tokenExpiresAt = Date.now() + Number(data.expires_in || 86399) * 1000;
+  tokenExpiresAt =
+    Date.now() + Number(data.expires_in || 86399) * 1000;
 
   return cachedToken;
 }
@@ -67,7 +66,7 @@ async function getShopifyAccessToken() {
 async function shopifyGraphQL(query, variables) {
   const token = await getShopifyAccessToken();
 
-  const r = await fetch(
+  const response = await fetch(
     `https://${SHOPIFY_STORE_DOMAIN}/admin/api/${ADMIN_API_VERSION}/graphql.json`,
     {
       method: "POST",
@@ -76,15 +75,18 @@ async function shopifyGraphQL(query, variables) {
         Accept: "application/json",
         "X-Shopify-Access-Token": token,
       },
-      body: JSON.stringify({ query, variables }),
+      body: JSON.stringify({
+        query,
+        variables,
+      }),
     }
   );
 
-  const json = await r.json();
+  const json = await response.json();
 
-  if (!r.ok) {
+  if (!response.ok) {
     throw new Error(
-      `Shopify API HTTP ${r.status}: ${JSON.stringify(json)}`
+      `Shopify API HTTP ${response.status}: ${JSON.stringify(json)}`
     );
   }
 
@@ -120,7 +122,28 @@ async function getReviews(gid) {
 
   const raw = data?.product?.metafield?.value;
 
-  return raw ? JSON.parse(raw) : [];
+  if (!raw) {
+    return [];
+  }
+
+  try {
+    const parsed = JSON.parse(raw);
+
+    if (!Array.isArray(parsed)) {
+      return [];
+    }
+
+    return parsed.map((review) => ({
+      ...review,
+      likes: Number(review.likes || 0),
+      comments: Array.isArray(review.comments)
+        ? review.comments
+        : [],
+    }));
+  } catch (error) {
+    console.error("Invalid reviews JSON:", error);
+    return [];
+  }
 }
 
 async function saveReviews(gid, reviews) {
@@ -146,11 +169,15 @@ async function saveReviews(gid, reviews) {
     }
   );
 
-  const errs = data?.metafieldsSet?.userErrors;
+  const errors = data?.metafieldsSet?.userErrors;
 
-  if (errs?.length) {
-    throw new Error(JSON.stringify(errs));
+  if (errors?.length) {
+    throw new Error(JSON.stringify(errors));
   }
+}
+
+function createId() {
+  return crypto.randomUUID();
 }
 
 export default async function handler(req, res) {
@@ -171,9 +198,13 @@ export default async function handler(req, res) {
   const gid = toGid(productId);
 
   try {
+    // =========================
+    // GET REVIEWS
+    // =========================
+
     if (req.method === "GET") {
       const reviews = (await getReviews(gid)).filter(
-        (r) => r.approved !== false
+        (review) => review.approved !== false
       );
 
       const total = reviews.length;
@@ -181,8 +212,10 @@ export default async function handler(req, res) {
       const average = total
         ? Number(
             (
-              reviews.reduce((s, r) => s + Number(r.rating), 0) /
-              total
+              reviews.reduce(
+                (sum, review) => sum + Number(review.rating || 0),
+                0
+              ) / total
             ).toFixed(1)
           )
         : 0;
@@ -190,11 +223,12 @@ export default async function handler(req, res) {
       const breakdown = [5, 4, 3, 2, 1].map((star) => ({
         star,
         count: reviews.filter(
-          (r) => Number(r.rating) === star
+          (review) => Number(review.rating) === star
         ).length,
       }));
 
       return res.status(200).json({
+        success: true,
         average,
         total,
         breakdown,
@@ -202,53 +236,168 @@ export default async function handler(req, res) {
       });
     }
 
+    // =========================
+    // POST
+    // =========================
+
     if (req.method === "POST") {
-      const { name, rating, title, body } = req.body || {};
-
-      if (!name || !rating || !body) {
-        return res.status(400).json({
-          error:
-            "Naam, rating aur review likhna zaroori hai",
-        });
-      }
-
-      if (Number(rating) < 1 || Number(rating) > 5) {
-        return res.status(400).json({
-          error:
-            "Rating 1 se 5 ke beech honi chahiye",
-        });
-      }
+      const body = req.body || {};
+      const action = body.action;
 
       const reviews = await getReviews(gid);
 
-      const newReview = {
-        id: crypto.randomUUID(),
-        name: String(name).slice(0, 80),
-        rating: Number(rating),
-        title: String(title || "").slice(0, 120),
-        body: String(body).slice(0, 2000),
-        date: new Date().toISOString(),
-        approved: true,
-      };
+      // =====================================
+      // ADD NEW REVIEW
+      // =====================================
 
-      reviews.unshift(newReview);
+      if (action === "review") {
+        const {
+          name,
+          rating,
+          title,
+          body: reviewBody,
+        } = body;
 
-      await saveReviews(gid, reviews);
+        if (!name || !rating || !reviewBody) {
+          return res.status(400).json({
+            error:
+              "Naam, rating aur review likhna zaroori hai",
+          });
+        }
 
-      return res.status(200).json({
-        success: true,
-        review: newReview,
+        const numericRating = Number(rating);
+
+        if (
+          numericRating < 1 ||
+          numericRating > 5
+        ) {
+          return res.status(400).json({
+            error:
+              "Rating 1 se 5 ke beech honi chahiye",
+          });
+        }
+
+        const newReview = {
+          id: createId(),
+          name: String(name).slice(0, 80),
+          rating: numericRating,
+          title: String(title || "").slice(0, 120),
+          body: String(reviewBody).slice(0, 2000),
+          date: new Date().toISOString(),
+          approved: true,
+          likes: 0,
+          comments: [],
+        };
+
+        reviews.unshift(newReview);
+
+        await saveReviews(gid, reviews);
+
+        return res.status(200).json({
+          success: true,
+          review: newReview,
+        });
+      }
+
+      // =====================================
+      // LIKE REVIEW
+      // =====================================
+
+      if (action === "like") {
+        const reviewId = body.reviewId;
+
+        if (!reviewId) {
+          return res.status(400).json({
+            error: "reviewId missing",
+          });
+        }
+
+        const review = reviews.find(
+          (item) => item.id === reviewId
+        );
+
+        if (!review) {
+          return res.status(404).json({
+            error: "Review not found",
+          });
+        }
+
+        review.likes = Number(review.likes || 0) + 1;
+
+        await saveReviews(gid, reviews);
+
+        return res.status(200).json({
+          success: true,
+          likes: review.likes,
+        });
+      }
+
+      // =====================================
+      // ADD COMMENT
+      // =====================================
+
+      if (action === "comment") {
+        const {
+          reviewId,
+          name,
+          body: commentBody,
+        } = body;
+
+        if (!reviewId || !commentBody) {
+          return res.status(400).json({
+            error: "Comment likhna zaroori hai",
+          });
+        }
+
+        const review = reviews.find(
+          (item) => item.id === reviewId
+        );
+
+        if (!review) {
+          return res.status(404).json({
+            error: "Review not found",
+          });
+        }
+
+        if (!Array.isArray(review.comments)) {
+          review.comments = [];
+        }
+
+        const newComment = {
+          id: createId(),
+          name: String(name || "Guest").slice(0, 80),
+          body: String(commentBody).slice(0, 1000),
+          date: new Date().toISOString(),
+        };
+
+        review.comments.push(newComment);
+
+        await saveReviews(gid, reviews);
+
+        return res.status(200).json({
+          success: true,
+          comment: newComment,
+          comments: review.comments,
+        });
+      }
+
+      return res.status(400).json({
+        error: "Invalid action",
       });
     }
 
     return res.status(405).json({
       error: "Method not allowed",
     });
-  } catch (err) {
-    console.error("REVIEWS API ERROR:", err);
+  } catch (error) {
+    console.error("REVIEWS API ERROR:", error);
 
     return res.status(500).json({
       error: "Server error, dobara try karein",
+      details:
+        process.env.NODE_ENV === "development"
+          ? error.message
+          : undefined,
     });
   }
 }
