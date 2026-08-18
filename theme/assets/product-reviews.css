@@ -1,1 +1,144 @@
 
+.reviews-app {
+  max-width: 720px;
+  margin: 40px auto;
+  font-family: inherit;
+  color: #222;
+}
+
+.reviews-app__header {
+  text-align: center;
+  margin-bottom: 24px;
+}
+.reviews-app__header h2 {
+  font-size: 22px;
+  margin-bottom: 8px;
+}
+.reviews-app__summary-stars {
+  font-size: 24px;
+  color: #f5a623;
+  letter-spacing: 2px;
+  margin-bottom: 12px;
+}
+.reviews-app__write-btn {
+  background: #111;
+  color: #fff;
+  border: none;
+  padding: 10px 22px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+}
+.reviews-app__write-btn:hover { background: #333; }
+
+.reviews-app__breakdown {
+  margin: 0 auto 30px;
+  max-width: 400px;
+}
+.reviews-app__breakdown-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  margin-bottom: 4px;
+}
+.reviews-app__breakdown-row .bar-track {
+  flex: 1;
+  background: #eee;
+  height: 8px;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.reviews-app__breakdown-row .bar-fill {
+  background: #f5a623;
+  height: 100%;
+}
+
+.reviews-app__form-wrap {
+  border: 1px solid #e5e5e5;
+  border-radius: 8px;
+  padding: 20px;
+  margin-bottom: 30px;
+  background: #fafafa;
+}
+.reviews-app__form-wrap label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  margin: 12px 0 4px;
+}
+.reviews-app__form-wrap input[type="text"],
+.reviews-app__form-wrap textarea {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid #ccc;
+  border-radius: 4px;
+  font-size: 14px;
+  box-sizing: border-box;
+}
+.reviews-app__star-input {
+  font-size: 26px;
+  color: #f5a623;
+  cursor: pointer;
+  letter-spacing: 4px;
+}
+.reviews-app__star-input span { transition: color 0.1s; }
+
+.reviews-app__form-actions {
+  margin-top: 16px;
+  display: flex;
+  gap: 10px;
+}
+.reviews-app__form-actions button[type="submit"] {
+  background: #111;
+  color: #fff;
+  border: none;
+  padding: 10px 20px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.reviews-app__form-actions button[type="button"] {
+  background: #fff;
+  border: 1px solid #ccc;
+  padding: 10px 20px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+.reviews-app__msg {
+  font-size: 13px;
+  margin-top: 10px;
+}
+
+.reviews-app__list-item {
+  border-top: 1px solid #eee;
+  padding: 16px 0;
+}
+.reviews-app__list-item .stars {
+  color: #f5a623;
+  letter-spacing: 2px;
+  font-size: 15px;
+}
+.reviews-app__list-item .rname {
+  font-weight: 600;
+  font-size: 14px;
+  margin-top: 4px;
+}
+.reviews-app__list-item .rdate {
+  font-size: 12px;
+  color: #888;
+}
+.reviews-app__list-item .rtitle {
+  font-weight: 600;
+  margin: 6px 0 2px;
+}
+.reviews-app__list-item .rbody {
+  font-size: 14px;
+  line-height: 1.5;
+  color: #444;
+}
+.reviews-app__loading, .reviews-app__empty {
+  text-align: center;
+  color: #888;
+  font-size: 14px;
+  padding: 20px 0;
+}
