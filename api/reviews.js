@@ -794,6 +794,7 @@ export default async function handler(
         rating,
         title,
         body: reviewBody,
+        language,
       } = body;
 
 
@@ -855,6 +856,10 @@ export default async function handler(
         body:
           String(reviewBody)
             .slice(0, 2000),
+
+        language:
+          String(language || "")
+            .slice(0, 40),
 
         date:
           new Date().toISOString(),
